@@ -3,6 +3,7 @@
 
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 #include <errno.h>
 #include <unistd.h>
 #include <netdb.h>
@@ -15,12 +16,13 @@
 #define READ_AGAIN   -3
 #define WRITE_AGAIN  -4
 #define CRLF_ERROR   -5
+#define NO_SPACE     -6
 
-int     set_non_blocking(int sockfd);
+int set_non_blocking(int sockfd);
 
-ssize_t readn(int     sockfd, char *buff, size_t nbytes);
-ssize_t readline(int  sockfd, char *buff, size_t maxlen);
-ssize_t writen(int    sockfd, char *buff, size_t *nbytes);
-ssize_t writeline(int sockfd, char *buff, size_t *nbytes);
+ssize_t readn(int      sockfd, char   *buff, size_t nbytes);
+ssize_t writen(int     sockfd, char   *buff, size_t *nbytes);
+ssize_t readline(const char    *data, char   *buff, size_t maxlen);
+ssize_t writeline(char *data,  const  char   *buff, size_t maxlen);
 
 #endif

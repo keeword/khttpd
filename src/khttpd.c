@@ -51,24 +51,6 @@ int create_and_bind(char *port)
         return listen_sock;
 }
 
-int set_non_blocking(int sock)
-{
-        int flags;
-
-        flags = fcntl(sock, F_GETFL, 0);
-        if (flags == -1) {
-                perror("fcntl");
-                return -1;
-        }
-
-        flags |= O_NONBLOCK;
-        if (fcntl(sock, F_SETFL, flags) == -1) {
-                perror("fcntl");
-                return -1;
-        }
-        return 0;
-}
-
 int handle_connect(int listen_sock, int epollfd)
 {
         while(1)
@@ -103,99 +85,6 @@ int handle_connect(int listen_sock, int epollfd)
         }
 }
 
-size_t readn(int sockfd, char *buff, size_t nbytes)
-{
-        size_t nleft;
-        size_t nread;
-        
-        nleft = nbytes;
-        while (nleft > 0) 
-        {
-                if ( (nread = read(sockfd, buff, nleft)) <= 0 ) {
-                        if (errno == EINTR) {
-                                continue;
-                        } else {
-                                return -1;
-                        }
-                }
-
-                nleft -= nread;
-                buff  += nread;
-        }
-
-        return (nbytes - nleft);
-}
-
-size_t writen(int sockfd, char *buff, size_t nbytes)
-{
-        size_t nleft;
-        size_t nwrite;
-
-        nleft = nbytes;
-        while (nleft > 0)
-        {
-                if ( (nwrite = write(sockfd, buff, nleft)) <= 0 ) {
-                        if (errno == EINTR) {
-                                continue;
-                        } else {
-                                return -1;
-                        }
-                }
-
-                nleft -= nwrite;
-                buff  += nwrite;
-        }
-
-        return (nbytes - nleft);
-}
-
-size_t readline(int sockfd, char *buff, size_t maxlen)
-{
-        size_t nleft;
-        size_t nread;
-        char tmp;
-
-        nleft = maxlen;
-
-        while (nleft > 0)
-        {
-                if ( (nread = read(sockfd, &tmp, 1)) != 1 ) {
-                        if (errno == EINTR) {
-                                continue;
-                        } else {
-                                fprintf(stderr, "%s", strerror(errno));
-                                return -1;
-                        }
-                }
-
-                if (tmp == '\r') {
-                        nread = read(sockfd, &tmp, 1);
-                        if ( (nread == 1) && (tmp == '\n') ) {
-                                break;
-                        }
-                } else {
-                        *buff++ = tmp;
-                        nleft--;
-                }
-
-        }
-
-        *buff = '\0';
-
-        return (maxlen - nleft);
-}
-
-size_t writeline(int sockfd, char *buff)
-{
-        int i, nwrite;
-        char ch[] = "\r\n";
-
-        for (i = 0; buff[i] != '\0'; i++);
-
-        nwrite =  writen(sockfd, buff, i);
-        return 0;
-}
-
 size_t get_string(char *line, char *buff, int index)
 {
         int start, end, ch;
@@ -208,24 +97,18 @@ static const char *method_string[] = {
 #undef XX
 };
 
-int parse_method(struct http_header *header, char *line)
+int parse_method(struct http_header *header, char *method)
 {
         int i;
-        char buff[10];
-
-        for (i = 0; line[i] != ' '; i++)
-        {
-                buff[i] = LOWER(line[i]);
-        }
-        buff[i] = '\0';
 
         for (i = 0; i < METHOD_NUM; i++)
         {
-                if (strcmp(buff, method_string[i]) == 0)
+                if (strcmp(method, method_string[i]) == 0)
                         break;
         }
 
         if (METHOD_NUM == i) {
+                header->state_code = STATE_CODE_405;
                 return -1;
         } else {
                 header->method = i;
@@ -233,49 +116,130 @@ int parse_method(struct http_header *header, char *line)
         }
 }
 
-int parse_url(struct http_header *header, char *line)
+int parse_url(struct http_header *header, char *url)
 {
-        char *buff;
-        int i, j;
+        int i;
+        char dec, hex[3];
+        char buff[2*MAX_URL_LENGTH];
 
-        buff = (char *) malloc(256*sizeof(char));
-
-        for (i = 0; line[i] != ' '; i++)
+        for (i = 0; url[i] != '\0'; i++)
         {
-                buff[i] = LOWER(line[i]);
-        }
-
-        for (i++, j = 0; line[i] != ' '; i++, j++)
-        {
-                if (IS_ALPHA(line[i])) {
-                        buff[j] = LOWER(line[i]);
+                if (IS_ALPHA(url[i])) {
+                        header->url[i] = LOWER(url[i]);
+                } else if (url[i] == '%'){
+                        hex[0] = url[i+1];
+                        hex[1] = url[i+2];
+                        hex[2] = '\0';
+                        sscanf(hex, "%x", header->url+i);
+                        i += 2;
+                } else if (url[i] == '?') {
+                        break;          // 不支持 url 参数
                 } else {
-                        buff[j] = line[i];
+                        header->url[i] = url[i];
                 }
         }
-        buff[j] = '\0';
-        header->url = buff;
+        header->url[i] = '\0';
+
+        if (header->url[i-1] == '/') {
+                strcat(header->url, INDEX_FILE);
+        }
+
+        memset(buff, 0, sizeof(buff));
+
+        strcat(buff, ROOT_DOCUMENT);
+        strcat(buff, header->url);
+
+
+        if (access(buff, F_OK) != 0) {
+                header->state_code = STATE_CODE_404;
+                return -1;
+        } else if (access(buff, R_OK) != 0) {
+                header->state_code = STATE_CODE_403;
+                return -1;
+        }
+
+        return 0;
+}
+
+int parse_version(struct http_header *header, char *version)
+{
+        int major, minor;
+        char buff[HTTP_VERSION_LENGTH];
+        int i;
+
+        memset(buff, 0, sizeof(buff));
+        strcat(buff, version+5);
+
+        header->http_major = (int) atof(buff);
+        header->http_minor = (int) ((atof(buff) - header->http_major) * 10);
+
+        if (header->http_major != 1 && (header->http_minor !=0 || 
+                                header->http_minor != 1)) {
+                header->state_code = STATE_CODE_505;
+                return -1;
+        }
         return 0;
 }
 
 int parse_request_line(struct http_header *header, char *line)
 {
+        char method[MAX_HTTP_METHOD_LENGTH];
+        char url[MAX_URL_LENGTH];
+        char version[HTTP_VERSION_LENGTH];
 
+        if (strlen(line) > MAX_HTTP_METHOD_LENGTH + 
+                           MAX_URL_LENGTH + 
+                           HTTP_VERSION_LENGTH) {
+                header->state_code = STATE_CODE_414;
+                return -1;
+        }
+
+        sscanf(line, "%s %s %s", method, url, version);
+
+        if (parse_method(header, method) == -1) {
+                printf("method\n");
+                return -1;
+        }
+
+        if (parse_url(header, url) == -1) {
+                printf("url\n");
+                return -1;
+        }
+
+        if (parse_version(header, version) == -1) {
+                printf("version\n");
+                return -1;
+        }
+
+        return 0;
 }
 
 int handle_request(int connect_sock, int epollfd)
 {
-        char buff[1024];
+        char data[BUFFER_SIZE];
+        char buff[128];
+        ssize_t nread;
+        int line = 0, tmp;
         struct http_header header;
         struct epoll_event event;
 
-        readline(connect_sock, buff, sizeof(buff));
-        parse_method(&header, buff);
-        parse_url(&header, buff);
+        nread = readn(connect_sock, data, sizeof(data));
+        switch (nread) {
+                case READ_AGAIN   : break; // read again
+                case CLIENT_CLOSE : break; // client close
+                default : break;           // default
+        }
 
-        while (readline(connect_sock, buff, sizeof(buff)))
+        line = readline(data + line, buff, sizeof(buff));
+        if (parse_request_line(&header, buff) == -1)
+                printf("error\n");
+
+        while (1)
         { 
-                // printf("%s\n", buff);
+                tmp = readline(data + line, buff, sizeof(buff));
+                if (tmp == 2) break;
+                line += tmp;
+                // TODO
         }
 
         event.data.fd = connect_sock;
@@ -284,22 +248,19 @@ int handle_request(int connect_sock, int epollfd)
                 perror("epoll_ctl");
                 abort();
         }
-
-        // close(connect_sock);
 }
 
 int handle_response(int connect_sock, int epollfd)
 {
         char buff[512];
+        size_t len;
 
-#define header_200_start "HTTP/1.1 200 OK\r\nServer: clowwindyserver/1.0\r\n" \
-        "Content-Type: text/html\r\nConnection: Close\r\n"
-
-#define header_404 "HTTP/1.1 404 Not Found\r\nServer: clowwindyserver/1.0\r\n" \
+#define header_404 "HTTP/1.1 404 Not Found" \
         "Content-Type: text/html\r\nConnection: Close\r\n\r\n<h1>Not found</h1>"
-        sprintf(buff, header_404);
+        sprintf(buff, "%s\r\n", header_404);
+        len = strlen(buff);
 
-        writeline(connect_sock, buff);
+        writen(connect_sock, buff, &len);
 
         close(connect_sock);
 

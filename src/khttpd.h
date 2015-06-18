@@ -15,11 +15,16 @@
 #include <sys/epoll.h>
 #include <netinet/in.h>
 #include <arpa/inet.h>
-// #include "io.h"
+#include "io.h"
 
+#define BUFFER_SIZE 1024
 #define MAXEVENTS 10240
 #define MAX_HTTP_METHOD_LENGTH 10
+#define MAX_URL_LENGTH 256
+#define HTTP_VERSION_LENGTH 10
 
+#define INDEX_FILE "index.htm"
+#define ROOT_DOCUMENT "/home/neng/workspace/khttpd"
 
 struct connecter {
         int connect_sock;
@@ -39,10 +44,10 @@ struct connecter {
 
 #define METHOD_NUM 4
 #define HTTP_METHOD_MAP(XX)            \
-        XX(GET,    "get")              \
-        XX(POST,   "post")             \
-        XX(PUT,    "put")              \
-        XX(DELETE, "delete")           \
+        XX(GET,    "GET")              \
+        XX(POST,   "POST")             \
+        XX(PUT,    "PUT")              \
+        XX(DELETE, "DELETE")           \
 
 enum http_method {
 #define XX(name, string) HTTP_##name,
@@ -102,7 +107,7 @@ struct http_header {
 
         // request only
         unsigned int state_code;
-        char *url;
+        char url[256];
 
         // response only
         unsigned int method;

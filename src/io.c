@@ -48,7 +48,7 @@ ssize_t readn(int sockfd, char *buff, size_t nbytes)
         return (nbytes - nleft);
 }
 
-ssize_t readline(int sockfd, char *buff, size_t maxlen)
+ssize_t readline(const char *data, char *buff, size_t maxlen)
 {
         ssize_t nleft, nread;
         char tmp;
@@ -57,29 +57,23 @@ ssize_t readline(int sockfd, char *buff, size_t maxlen)
 
         while (nleft > 0)
         {
-                if ((nread = readn(sockfd, &tmp, 1)) != 1) {
-                        return nread;
-                }
-
+                tmp = *data; data++;
                 if (tmp == '\r') {
-                        if ( (nread = readn(sockfd, &tmp, 1) != 1)){
-                                return nread;
-                        } else if (tmp != '\n') {
+                        if (*data != '\n') {
                                 return CRLF_ERROR;
                         } else {
                                 // 成功读取一行
                                 break;
                         }
                 } else {
-                        *buff++ = tmp;
+                        *buff = tmp; buff++;
                         nleft--;
                 }
-
         }
 
         *buff = '\0';
 
-        return (maxlen - nleft);
+        return (maxlen - nleft + 2);
 }
 
 ssize_t writen(int sockfd, char *buff, size_t *nbytes)
@@ -113,32 +107,14 @@ ssize_t writen(int sockfd, char *buff, size_t *nbytes)
         return (*nbytes - nleft);
 }
 
-ssize_t writeline(int sockfd, char *buff, size_t *nbytes)
+ssize_t writeline(char *data,const char *buff, size_t maxlen)
 {
-        ssize_t nwrite, nleft;
-        size_t *len;
-        char end[] = "\r\n";
-
-        for (nleft = 0; buff[nleft] != '\0'; nleft++)
-                ;
-
-        *nbytes = 0;
-        while (nleft > 0)
-        {
-                *len = nleft;
-                nwrite = writen(sockfd, buff, len);
-                if (nwrite < 0) {
-                        *nbytes += *len;
-                        return nwrite;
-                } else {
-                        nleft   -= nwrite;
-                        *nbytes += nwrite;
-                }
+        if (strlen(data) + strlen(buff) > maxlen) {
+                return NO_SPACE;
         }
 
-        *len = 2;
-        writen(sockfd, end, len);
 
-        return *nbytes;
+        strcat(data, buff);
+
+        return 0;
 }
-
