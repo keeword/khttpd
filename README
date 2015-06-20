@@ -1,0 +1,17 @@
+Just for Study
+
+这是一个非常简陋的 HTTP Server 实现。
+目前只实现了一些非常基础的功能。
+
+list.c          - 简单双向链表的实现
+io.c            - 对 read/write 操作的一个封装，
+                  添加信号的处理
+parse.c         - 解析 HTTP 头
+process.c       - 作出 HTTP 响应
+khttpd.c        - 主函数，epoll 的调用
+
+安装:
+./configure
+make
+
+然后就可以在 src/ 下看到 khttpd 执行文件
