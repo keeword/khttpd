@@ -1,10 +1,10 @@
 #include "khttpd.h"
+#include "list.h"
+#include "io.h"
+#include "parse.h"
+#include "process.h"
 
-void die(const char* str)
-{
-        fprintf(stderr, "%s\n", str);
-        exit(1);
-}
+static struct connector list_head;
 
 int create_and_bind(char *port)
 {
@@ -51,6 +51,13 @@ int create_and_bind(char *port)
         return listen_sock;
 }
 
+int clean_up(struct connector *conn, int connect_sock)
+{
+        list_del(conn);
+        free(conn);
+        close(connect_sock);
+}
+
 int handle_connect(int listen_sock, int epollfd)
 {
         while(1)
@@ -85,161 +92,61 @@ int handle_connect(int listen_sock, int epollfd)
         }
 }
 
-size_t get_string(char *line, char *buff, int index)
-{
-        int start, end, ch;
-        int i;
-}
-
-static const char *method_string[] = {
-#define XX(name, string) string,
-        HTTP_METHOD_MAP(XX)
-#undef XX
-};
-
-int parse_method(struct http_header *header, char *method)
-{
-        int i;
-
-        for (i = 0; i < METHOD_NUM; i++)
-        {
-                if (strcmp(method, method_string[i]) == 0)
-                        break;
-        }
-
-        if (METHOD_NUM == i) {
-                header->state_code = STATE_CODE_405;
-                return -1;
-        } else {
-                header->method = i;
-                return 0;
-        }
-}
-
-int parse_url(struct http_header *header, char *url)
-{
-        int i;
-        char dec, hex[3];
-        char buff[2*MAX_URL_LENGTH];
-
-        for (i = 0; url[i] != '\0'; i++)
-        {
-                if (IS_ALPHA(url[i])) {
-                        header->url[i] = LOWER(url[i]);
-                } else if (url[i] == '%'){
-                        hex[0] = url[i+1];
-                        hex[1] = url[i+2];
-                        hex[2] = '\0';
-                        sscanf(hex, "%x", header->url+i);
-                        i += 2;
-                } else if (url[i] == '?') {
-                        break;          // 不支持 url 参数
-                } else {
-                        header->url[i] = url[i];
-                }
-        }
-        header->url[i] = '\0';
-
-        if (header->url[i-1] == '/') {
-                strcat(header->url, INDEX_FILE);
-        }
-
-        memset(buff, 0, sizeof(buff));
-
-        strcat(buff, ROOT_DOCUMENT);
-        strcat(buff, header->url);
-
-
-        if (access(buff, F_OK) != 0) {
-                header->state_code = STATE_CODE_404;
-                return -1;
-        } else if (access(buff, R_OK) != 0) {
-                header->state_code = STATE_CODE_403;
-                return -1;
-        }
-
-        return 0;
-}
-
-int parse_version(struct http_header *header, char *version)
-{
-        int major, minor;
-        char buff[HTTP_VERSION_LENGTH];
-        int i;
-
-        memset(buff, 0, sizeof(buff));
-        strcat(buff, version+5);
-
-        header->http_major = (int) atof(buff);
-        header->http_minor = (int) ((atof(buff) - header->http_major) * 10);
-
-        if (header->http_major != 1 && (header->http_minor !=0 || 
-                                header->http_minor != 1)) {
-                header->state_code = STATE_CODE_505;
-                return -1;
-        }
-        return 0;
-}
-
-int parse_request_line(struct http_header *header, char *line)
-{
-        char method[MAX_HTTP_METHOD_LENGTH];
-        char url[MAX_URL_LENGTH];
-        char version[HTTP_VERSION_LENGTH];
-
-        if (strlen(line) > MAX_HTTP_METHOD_LENGTH + 
-                           MAX_URL_LENGTH + 
-                           HTTP_VERSION_LENGTH) {
-                header->state_code = STATE_CODE_414;
-                return -1;
-        }
-
-        sscanf(line, "%s %s %s", method, url, version);
-
-        if (parse_method(header, method) == -1) {
-                printf("method\n");
-                return -1;
-        }
-
-        if (parse_url(header, url) == -1) {
-                printf("url\n");
-                return -1;
-        }
-
-        if (parse_version(header, version) == -1) {
-                printf("version\n");
-                return -1;
-        }
-
-        return 0;
-}
-
 int handle_request(int connect_sock, int epollfd)
 {
         char data[BUFFER_SIZE];
-        char buff[128];
+        char buff[BUFFER_SIZE];
         ssize_t nread;
+        size_t header_len;
         int line = 0, tmp;
-        struct http_header header;
+        struct http_header *header;
         struct epoll_event event;
+        struct connector *conn;
+
+        conn = (struct connector*) malloc(sizeof(struct connector));
+        conn->connect_sock = connect_sock;
+        header = &conn->header;
+        list_add(&list_head, conn);
 
         nread = readn(connect_sock, data, sizeof(data));
+        // TODO
         switch (nread) {
                 case READ_AGAIN   : break; // read again
                 case CLIENT_CLOSE : break; // client close
-                default : break;           // default
+                default :           break; // default
         }
 
         line = readline(data + line, buff, sizeof(buff));
-        if (parse_request_line(&header, buff) == -1)
-                printf("error\n");
+        if (parse_request_line(header, buff) == -1) {
+                // printf("error\n");
+        } else {
+                header->state_code = STATE_CODE_200;
+        }
+
+        memset(header->field, 0, HEADER_FIELD_NUMBER*sizeof(char*));
 
         while (1)
         { 
                 tmp = readline(data + line, buff, sizeof(buff));
+                parse_field(header, buff);
                 if (tmp == 2) break;
                 line += tmp;
                 // TODO
+        }
+        header_len = line+2;
+
+        for (int i = 0; i < HEADER_FIELD_NUMBER; i++)
+        {
+                if (header->field[i] == 0) {
+                        continue;
+                }
+                switch(i) 
+                {
+                        case FIELD_Content_Length: 
+                                parse_field_content(header, data+header_len);
+                                break;
+                        default: break;
+                }
         }
 
         event.data.fd = connect_sock;
@@ -252,22 +159,48 @@ int handle_request(int connect_sock, int epollfd)
 
 int handle_response(int connect_sock, int epollfd)
 {
-        char buff[512];
-        size_t len;
+        struct connector *conn;
+        struct http_header *header;
+        char buff[BUFFER_SIZE];
+        char response_header[BUFFER_SIZE];
+        size_t response_line, len;
+        char **output;
 
-#define header_404 "HTTP/1.1 404 Not Found" \
-        "Content-Type: text/html\r\nConnection: Close\r\n\r\n<h1>Not found</h1>"
-        sprintf(buff, "%s\r\n", header_404);
-        len = strlen(buff);
+        conn   = list_find(&list_head, connect_sock);
+        header = &conn->header;
 
-        writen(connect_sock, buff, &len);
+        if (process_response_line(header, buff) == -1) {
+                clean_up(conn, connect_sock);
+                return -1;
+        }
+        response_line = sprintf(response_header, "%s", buff);
 
-        close(connect_sock);
+        switch (header->state_code)
+        {
+                case STATE_CODE_200: len = process_200(header, output); break;
+                case STATE_CODE_403: len = process_403(header, output); break;
+                case STATE_CODE_404: len = process_404(header, output); break;
+                case STATE_CODE_405: len = process_405(header, output); break;
+                case STATE_CODE_414: len = process_414(header, output); break;
+                case STATE_CODE_505: len = process_505(header, output); break;
+                default : len = process_400(header, output); break;
+        }
+
+        if (len == -1) {
+                perror("process_200");
+                clean_up(conn, connect_sock);
+                return -1;
+        } else {
+                writen(connect_sock, response_header, &response_line);
+                writen(connect_sock, *output, &len);
+                clean_up(conn, connect_sock);
+        }
 
         return 0;
 }
 
-void sighandler(int sig) {
+void sighandler(int sig) 
+{
         exit(0);
 }
 
@@ -314,6 +247,9 @@ int main(int argc, char* argv[])
         }
 
         events = (struct epoll_event*) malloc(MAXEVENTS * sizeof(struct epoll_event));
+
+        list_head.connect_sock = 0;
+        list_init(&list_head);
 
         while (1)
         {
