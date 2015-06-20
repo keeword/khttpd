@@ -1,4 +1,6 @@
 *.swp
+*.swo
 *.o
 *.tar.gz
 *.cache
+*.deps
