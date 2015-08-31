@@ -1,10 +1,27 @@
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <errno.h>
+#include <unistd.h>
+#include <fcntl.h>
+#include <netdb.h>
+#include <signal.h>
+#include <sys/stat.h>
+#include <sys/socket.h>
+#include <sys/types.h>
+#include <sys/epoll.h>
+#include <sys/wait.h>
+#include <netinet/in.h>
+#include <arpa/inet.h>
 #include "khttpd.h"
 #include "list.h"
 #include "io.h"
 #include "parse.h"
 #include "process.h"
 
+static struct client clients;
 static struct connector list_head;
+extern char **method_string;
 
 int create_and_bind(char *port)
 {
@@ -58,38 +75,45 @@ int clean_up(struct connector *conn, int connect_sock)
         close(connect_sock);
 }
 
-int handle_connect(int listen_sock, int epollfd)
+// client connect server
+int handle_connect(int server_fd, int epollfd)
 {
         while(1)
         {
-                int connect_sock;
+                int client_fd;
                 struct sockaddr client_addr;
                 socklen_t client_addr_len;
                 struct epoll_event event;
 
+                // accept client
                 client_addr_len = sizeof(client_addr);
-                connect_sock    = accept(listen_sock, &client_addr, &client_addr_len);
-                if (connect_sock == -1) {
-                        if ((errno = EAGAIN) || 
-                            (errno = EWOULDBLOCK)) {
+                client_fd       = accept(server_fd, &client_addr, &client_addr_len);
+
+                if (client_fd == -1) {
+                        if ((errno == EAGAIN) || (errno == EWOULDBLOCK)) {
                                 break;
                         } else {
                                 perror("accept");
-                                break;
+                                abort();
                         }
                 }
 
-                if (set_non_blocking(connect_sock) == -1) {
+                // set non-blocking
+                if (set_non_blocking(client_fd) == -1) {
                         abort();
                 }
 
-                event.data.fd = connect_sock;
+                event.data.fd = client_fd;
                 event.events  = EPOLLIN | EPOLLET;
-                if (epoll_ctl(epollfd, EPOLL_CTL_ADD, connect_sock, &event) == -1) {
+                if (epoll_ctl(epollfd, EPOLL_CTL_ADD, client_fd, &event) == -1) {
                         perror("epoll_ctl");
                         abort();
                 }
+
+                break;
         }
+
+        return 0;
 }
 
 int handle_request(int connect_sock, int epollfd)
@@ -103,11 +127,19 @@ int handle_request(int connect_sock, int epollfd)
         struct epoll_event event;
         struct connector *conn;
 
+        // alloc space for a client, then insert it the list and
+        // process it's request
         conn = (struct connector*) malloc(sizeof(struct connector));
         conn->connect_sock = connect_sock;
         header = &conn->header;
+
+        // init struct http header
+        http_header_init(header);
+        header->state = s_request_start;
+
         list_add(&list_head, conn);
 
+        // read request data to the buffer
         nread = readn(connect_sock, data, sizeof(data));
         // TODO
         switch (nread) {
@@ -116,45 +148,27 @@ int handle_request(int connect_sock, int epollfd)
                 default :           break; // default
         }
 
-        line = readline(data + line, buff, sizeof(buff));
-        if (parse_request_line(header, buff) == -1) {
-                // printf("error\n");
-        } else {
-                header->state_code = STATE_CODE_200;
-        }
-
-        memset(header->field, 0, HEADER_FIELD_NUMBER*sizeof(char*));
-
-        while (1)
-        { 
-                tmp = readline(data + line, buff, sizeof(buff));
-                parse_field(header, buff);
-                if (tmp == 2) break;
-                line += tmp;
-                // TODO
-        }
-        header_len = line+2;
-
-        for (int i = 0; i < HEADER_FIELD_NUMBER; i++)
-        {
-                if (header->field[i] == 0) {
-                        continue;
-                }
-                switch(i) 
-                {
-                        case FIELD_Content_Length: 
-                                parse_field_content(header, data+header_len);
-                                break;
-                        default: break;
+        // parse the request data
+        if (parse_request(header, data, nread) == -1) {
+                // need to read again
+                if (header->error == e_again) {
+                        return 0;
                 }
         }
 
-        event.data.fd = connect_sock;
-        event.events  = EPOLLOUT | EPOLLET;
-        if (epoll_ctl(epollfd, EPOLL_CTL_MOD, connect_sock, &event) == -1) {
-                perror("epoll_ctl");
-                abort();
-        }
+        printf("%d\n", header->method);
+        printf("%s\n", header->url);
+        printf("HTTP/%d.%d\n", header->http_major, header->http_minor);
+
+        // associated the connect socket for write
+        // event.data.fd = connect_sock;
+        // event.events  = EPOLLOUT | EPOLLET;
+        // if (epoll_ctl(epollfd, EPOLL_CTL_MOD, connect_sock, &event) == -1) {
+                // perror("epoll_ctl");
+                // abort();
+        // }
+
+        return 0;
 }
 
 int handle_response(int connect_sock, int epollfd)
@@ -210,6 +224,7 @@ int main(int argc, char* argv[])
         struct epoll_event event;
         struct epoll_event *events;
 
+        // handle some signal
         signal(SIGABRT, &sighandler);
         signal(SIGTERM, &sighandler);
         signal(SIGINT,  &sighandler);
@@ -219,33 +234,43 @@ int main(int argc, char* argv[])
                 exit(EXIT_FAILURE);
         }
 
+        // create socket and bind it to the port
         listen_sock = create_and_bind(argv[1]);
         if (listen_sock == -1) {
                 abort();
         }
 
+        // set socket non-blocking
         if (set_non_blocking(listen_sock) == -1) {
                 abort();
         }
 
+        // listen socket
         if (listen(listen_sock, SOMAXCONN) == -1) {
                 perror("listen");
                 abort();
         }
 
+        // create epoll file descriptor
         epollfd = epoll_create1(0);
         if (epollfd == -1) {
                 perror("epoll_create");
                 abort();
         }
 
+        // associated socket file descriptor to epoll event
         event.data.fd = listen_sock;
+        // avaliable for read and,
+        // set the Edge Triggered behavior for the associated file descriptor
         event.events  = EPOLLIN | EPOLLET;
+        // register the socket to the epoll instance,
+        // and associated the event.
         if (epoll_ctl(epollfd, EPOLL_CTL_ADD, listen_sock, &event) == -1) {
                 perror("epoll_ctl");
                 abort();
         }
 
+        // array to store the events happened during run-time
         events = (struct epoll_event*) malloc(MAXEVENTS * sizeof(struct epoll_event));
 
         list_head.connect_sock = 0;
@@ -255,6 +280,8 @@ int main(int argc, char* argv[])
         {
                 int n, i;
 
+                // wait for event happen,
+                // and get the event from events
                 n = epoll_wait(epollfd, events, MAXEVENTS, -1);
                 if (n == -1) {
                         perror("epoll_wait");
@@ -263,19 +290,21 @@ int main(int argc, char* argv[])
 
                 for (i = 0; i < n; i++)
                 {
+                        // some error
                         if ((events[i].events & EPOLLERR) ||
                             (events[i].events & EPOLLHUP)) {
                                 fprintf(stderr, "epoll error\n");
                                 close(events[i].data.fd);
                                 continue;
+                        // a client connect the server
                         } else if (events[i].data.fd == listen_sock) {
                                 handle_connect(listen_sock, epollfd);
-                        } else {
-                                if (events[i].events & EPOLLIN) {
-                                        handle_request(events[i].data.fd, epollfd);
-                                } else if (events[i].events & EPOLLOUT) {
-                                        handle_response(events[i].data.fd, epollfd);
-                                }
+                        // we can send response to the client
+                        } else if (events[i].events & EPOLLOUT) {
+                                handle_response(events[i].data.fd, epollfd);
+                        // a http request arrive
+                        } else if (events[i].events & EPOLLIN) {
+                                handle_request(events[i].data.fd, epollfd);
                         }
                 }
         }

@@ -34,7 +34,8 @@ ssize_t readn(int sockfd, char *buff, size_t nbytes)
                                 // errno == EAGAIN or EWOULDBLOCK
                                 // 已读取缓存中所有数据
                                 // 等待下次再读取不足的数据
-                                return READ_AGAIN;
+                                break;
+                                // return READ_AGAIN;
                         }
                 } else if (nread == 0) {
                         // 客户端关闭连接

@@ -2,6 +2,7 @@
 #define _LIST_H_
 
 #include "khttpd.h"
+#include "parse.h"
 
 int list_init(struct connector *head);
 

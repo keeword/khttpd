@@ -4,3 +4,4 @@
 *.tar.gz
 *.cache
 *.deps
+*test*

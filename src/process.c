@@ -1,3 +1,12 @@
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <unistd.h>
+#include <sys/types.h>
+#include <sys/stat.h>
+#include <sys/wait.h>
+#include <fcntl.h>
+#include <errno.h>
 #include "process.h"
 
 #define header_temp "Content-Type: text/html\r\nConnection: Close\r\n"
@@ -43,6 +52,7 @@ size_t serve_file(struct http_header *header, char **output)
         return total_len;
 }
 
+extern char **method_string;
 size_t execute_cgi(struct http_header *header, char **output)
 {
         int cgi_output[2];
@@ -114,7 +124,7 @@ size_t execute_cgi(struct http_header *header, char **output)
 
 size_t process_200(struct http_header *header, char **output)
 {
-        if (header->method == HTTP_POST ||
+        if (header->method == HTTP_METHOD_POST ||
             access(header->path, X_OK) == 0) {
                 header->cgi = 1;
         } else {
@@ -175,6 +185,9 @@ size_t process_505(struct http_header *header, char **output)
 {
         return process_error(header, output, header_505);
 }
+
+extern char **state_code_string;
+extern char **state_code_phrase;
 
 int process_response_line(struct http_header *header, char *buff)
 {

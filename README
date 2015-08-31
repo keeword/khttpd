@@ -10,7 +10,8 @@ parse.c         - 解析 HTTP 头
 process.c       - 作出 HTTP 响应
 khttpd.c        - 主函数，epoll 的调用
 
-安装:
+编译之前请先修改 src/khttpd.h 中的 DOCUMENT_ROOT 宏，
+使之指向新的目录，然后编译：
 ./configure
 make
 

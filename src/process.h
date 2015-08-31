@@ -1,10 +1,7 @@
 #ifndef _PROCESS_H_
 #define _PROCESS_H_
 
-#include <stdio.h>
-#include <stdlib.h>
-#include <unistd.h>
-#include "khttpd.h"
+#include "parse.h"
 
 long get_file_size(char *filename);
 size_t serve_file(struct http_header *header, char **output);
